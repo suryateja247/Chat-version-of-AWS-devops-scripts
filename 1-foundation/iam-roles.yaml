@@ -1,0 +1,302 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Roles and Policies for Multi-Account DevOps Setup'
+
+Parameters:
+  ManagementAccountId:
+    Type: String
+    Description: AWS Management Account ID
+    AllowedPattern: '^[0-9]{12}$'
+
+Resources:
+  # ============================================================================
+  # CodePipeline Cross-Account Role
+  # ============================================================================
+  CrossAccountCodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CrossAccountCodePipelineRole
+      Description: Role for CodePipeline to assume in target accounts
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${ManagementAccountId}:role/CodePipelineServiceRole'
+              Service: codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Sub 'codepipeline-${ManagementAccountId}'
+      Tags:
+        - Key: Environment
+          Value: DevOps
+        - Key: Purpose
+          Value: CrossAccountAccess
+
+  CrossAccountCodePipelinePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodePipelineCrossAccountPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AssumeRolePolicy
+            Effect: Allow
+            Action:
+              - 'sts:AssumeRole'
+            Resource: !Sub 'arn:aws:iam::*:role/CrossAccountCodePipelineRole'
+          
+          - Sid: S3Access
+            Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+              - 's3:GetBucketVersioning'
+              - 's3:PutObject'
+            Resource:
+              - !Sub 'arn:aws:s3:::devops-artifacts-${ManagementAccountId}'
+              - !Sub 'arn:aws:s3:::devops-artifacts-${ManagementAccountId}/*'
+          
+          - Sid: CloudFormationAccess
+            Effect: Allow
+            Action:
+              - 'cloudformation:*'
+            Resource: !Sub 'arn:aws:cloudformation:*:${AWS::AccountId}:*'
+          
+          - Sid: CodeDeployAccess
+            Effect: Allow
+            Action:
+              - 'codedeploy:CreateDeployment'
+              - 'codedeploy:GetApplication'
+              - 'codedeploy:GetApplicationRevision'
+              - 'codedeploy:GetDeployment'
+              - 'codedeploy:GetDeploymentConfig'
+              - 'codedeploy:RegisterApplicationRevision'
+            Resource: '*'
+          
+          - Sid: IAMPassRole
+            Effect: Allow
+            Action:
+              - 'iam:PassRole'
+            Resource:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/CloudFormationExecutionRole'
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/CodeDeployServiceRole'
+          
+          - Sid: ECRAccess
+            Effect: Allow
+            Action:
+              - 'ecr:DescribeImages'
+              - 'ecr:BatchGetImage'
+              - 'ecr:GetDownloadUrlForLayer'
+            Resource: !Sub 'arn:aws:ecr:*:${AWS::AccountId}:repository/*'
+      Roles:
+        - !Ref CrossAccountCodePipelineRole
+
+  # ============================================================================
+  # Lambda Execution Role for Cross-Account Operations
+  # ============================================================================
+  CrossAccountLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CrossAccountLambdaExecutionRole
+      Description: Role for Lambda functions to perform cross-account operations
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Tags:
+        - Key: Environment
+          Value: DevOps
+
+  CrossAccountLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CrossAccountLambdaPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AssumeRoleInTargetAccounts
+            Effect: Allow
+            Action:
+              - 'sts:AssumeRole'
+            Resource: !Sub 'arn:aws:iam::*:role/CrossAccountLambdaRole'
+          
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource: !Sub 'arn:aws:logs:*:${AWS::AccountId}:*'
+          
+          - Sid: SNSPublish
+            Effect: Allow
+            Action:
+              - 'sns:Publish'
+            Resource: !Sub 'arn:aws:sns:*:${AWS::AccountId}:*'
+          
+          - Sid: DynamoDBAccess
+            Effect: Allow
+            Action:
+              - 'dynamodb:GetItem'
+              - 'dynamodb:Query'
+              - 'dynamodb:PutItem'
+            Resource: !Sub 'arn:aws:dynamodb:*:${AWS::AccountId}:table/*'
+      Roles:
+        - !Ref CrossAccountLambdaExecutionRole
+
+  # ============================================================================
+  # EC2 Instance Role
+  # ============================================================================
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EC2InstanceRole
+      Description: Role for EC2 instances in multi-account setup
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy'
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - 'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly'
+      Tags:
+        - Key: Environment
+          Value: DevOps
+
+  EC2InstancePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: EC2InstancePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3Access
+            Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+              - 's3:ListBucket'
+            Resource:
+              - !Sub 'arn:aws:s3:::devops-artifacts-${ManagementAccountId}'
+              - !Sub 'arn:aws:s3:::devops-artifacts-${ManagementAccountId}/*'
+          
+          - Sid: CodeDeployAccess
+            Effect: Allow
+            Action:
+              - 'codedeploy:GetDeploymentConfig'
+              - 'codedeploy:GetApplicationRevision'
+              - 'codedeploy:GetDeployment'
+            Resource: '*'
+          
+          - Sid: CloudWatchMetrics
+            Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+              - 'cloudwatch:GetMetricStatistics'
+              - 'cloudwatch:ListMetrics'
+            Resource: '*'
+          
+          - Sid: AssumeRoleInOtherAccounts
+            Effect: Allow
+            Action:
+              - 'sts:AssumeRole'
+            Resource: !Sub 'arn:aws:iam::*:role/CrossAccountLambdaRole'
+      Roles:
+        - !Ref EC2InstanceRole
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: EC2InstanceProfile
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # ============================================================================
+  # CodeDeploy Service Role
+  # ============================================================================
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CodeDeployServiceRole
+      Description: Role for CodeDeploy service
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AWSCodeDeployRoleForEC2'
+      Tags:
+        - Key: Environment
+          Value: DevOps
+
+  # ============================================================================
+  # CloudFormation Execution Role
+  # ============================================================================
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CloudFormationExecutionRole
+      Description: Role for CloudFormation to create and manage resources
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AdministratorAccess'
+      Tags:
+        - Key: Environment
+          Value: DevOps
+
+Outputs:
+  CrossAccountCodePipelineRoleArn:
+    Value: !GetAtt CrossAccountCodePipelineRole.Arn
+    Export:
+      Name: CrossAccountCodePipelineRoleArn
+    Description: ARN of cross-account CodePipeline role
+  
+  CrossAccountLambdaExecutionRoleArn:
+    Value: !GetAtt CrossAccountLambdaExecutionRole.Arn
+    Export:
+      Name: CrossAccountLambdaExecutionRoleArn
+    Description: ARN of cross-account Lambda execution role
+  
+  EC2InstanceRoleArn:
+    Value: !GetAtt EC2InstanceRole.Arn
+    Export:
+      Name: EC2InstanceRoleArn
+    Description: ARN of EC2 instance role
+  
+  EC2InstanceProfileArn:
+    Value: !GetAtt EC2InstanceProfile.Arn
+    Export:
+      Name: EC2InstanceProfileArn
+    Description: ARN of EC2 instance profile
+  
+  CodeDeployServiceRoleArn:
+    Value: !GetAtt CodeDeployServiceRole.Arn
+    Export:
+      Name: CodeDeployServiceRoleArn
+    Description: ARN of CodeDeploy service role
+  
+  CloudFormationExecutionRoleArn:
+    Value: !GetAtt CloudFormationExecutionRole.Arn
+    Export:
+      Name: CloudFormationExecutionRoleArn
+    Description: ARN of CloudFormation execution role
